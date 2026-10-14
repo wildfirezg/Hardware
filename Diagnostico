@@ -1,0 +1,155 @@
+FUNCTION_BLOCK LULC033_DIAG
+VAR_INPUT
+	Enable      : BOOL;
+	Fault       : BOOL;
+	Warning     : BOOL;
+	Request     : BOOL;
+	FaultCode   : WORD;
+	WarningCode : WORD;
+END_VAR
+VAR_OUTPUT
+	GetFaultCode   : BOOL;
+	GetWarningCode : BOOL;
+	sFaultCode     : STRING;
+	sWarningCode   : STRING;
+END_VAR
+VAR
+	rtFault        : R_TRIG;
+	rtWarning      : R_TRIG;
+	rtPeticion     : R_TRIG;
+	tWaitFault     : TON;
+	tWaitWarning   : TON;
+	state          : (IDL, REQ_FAULT, WAIT_FAULT, REQ_WARNING, WAIT_WARNING) := IDL;
+	FaultPending   : BOOL;
+	WarningPending : BOOL;
+END_VAR
+
+
+rtFault(CLK := Fault);
+rtWarning(CLK := Warning);
+rtPeticion(CLK := Request);
+
+IF NOT Enable THEN
+    state          := IDL;
+    GetFaultCode   := FALSE;
+    GetWarningCode := FALSE;
+    FaultPending   := FALSE;
+    WarningPending := FALSE;
+    sFaultCode     := '';
+    sWarningCode   := '';
+    tWaitFault(IN := FALSE, PT := T#900MS);
+    tWaitWarning(IN := FALSE, PT := T#900MS);
+    RETURN;
+END_IF
+
+
+IF rtFault.Q OR rtPeticion.Q THEN
+    FaultPending := TRUE;
+END_IF
+IF rtWarning.Q OR rtPeticion.Q THEN
+    WarningPending := TRUE;
+END_IF
+
+
+CASE state OF
+
+    IDL:
+        GetFaultCode   := FALSE;
+        GetWarningCode := FALSE;
+        IF FaultPending THEN
+            state := REQ_FAULT;
+        ELSIF WarningPending THEN
+            state := REQ_WARNING;
+        END_IF
+
+    REQ_FAULT:
+        GetFaultCode := TRUE;
+        tWaitFault(IN := TRUE, PT := T#900MS);
+        state := WAIT_FAULT;
+
+    WAIT_FAULT:
+        tWaitFault(IN := TRUE, PT := T#900MS);
+        IF tWaitFault.Q THEN
+            GetFaultCode := FALSE;
+            FaultPending := FALSE;
+            tWaitFault(IN := FALSE, PT := T#900MS); 
+            CASE FaultCode OF
+    0:   sFaultCode := 'Sin fallo';
+    1:   sFaultCode := 'Fallo por cortocircuito';
+    2:   sFaultCode := 'Fallo por disparo magnético / sobrecorriente';
+    3:   sFaultCode := 'Fallo por defecto a tierra';
+    4:   sFaultCode := 'Fallo por sobrecarga térmica';
+    5:   sFaultCode := 'Fallo por arranque largo';
+    6:   sFaultCode := 'Fallo por bloque mecánico (atasco)';
+    7:   sFaultCode := 'Fallo por desequilibrio de fases';
+    8:   sFaultCode := 'Fallo por baja carga (subcarga)';
+    9:   sFaultCode := 'Fallo por disparo de bobina de emisión (shunt trip)';
+    10:  sFaultCode := 'Disparo de prueba (simulación de sobrecarga térmica)';
+    11:  sFaultCode := 'Pérdida de comunicación en puerto Modbus LUCM (caída de relé)';
+    12:  sFaultCode := 'Pérdida de comunicación en puerto Modbus LUCM (disparado)';
+    13:  sFaultCode := 'Reservado';
+    14:  sFaultCode := 'Fallo de identificación del módulo';
+    15:  sFaultCode := 'Módulo no instalado o sin alimentación';
+    51:  sFaultCode := 'Fallo de temperatura interna LUCM o sensor roto';
+    52..58: sFaultCode := 'Fallo interno';
+    59:  sFaultCode := 'Corriente detectada sin señal en la bobina';
+    60:  sFaultCode := 'Corriente (L2) detectada en modo monofásico';
+    61:  sFaultCode := 'Disparo de la base no detectado';
+    62:  sFaultCode := 'Fallo en el cableado de control';
+    63:  sFaultCode := 'Sobretensión de control';
+    100: sFaultCode := 'Fallo interno del módulo de comunicación';
+    101: sFaultCode := 'Fallo de comunicación con unidad de control multifunción LUCM';
+    102: sFaultCode := 'Fallo interno del módulo de comunicación';
+    104: sFaultCode := 'Fallo interno del módulo de comunicación';
+    105: sFaultCode := 'Fallo de comunicación con la base de control LUTM';
+ELSE
+    sFaultCode := 'Código de fallo desconocido';
+END_CASE;
+
+            IF WarningPending THEN
+                state := REQ_WARNING;
+            ELSE
+                state := IDL;
+            END_IF
+        END_IF
+
+    REQ_WARNING:
+        GetWarningCode := TRUE;
+        tWaitWarning(IN := TRUE, PT := T#900MS);
+        state := WAIT_WARNING;
+
+    WAIT_WARNING:
+        tWaitWarning(IN := TRUE, PT := T#900MS);
+        IF tWaitWarning.Q THEN
+            GetWarningCode := FALSE;
+            WarningPending := FALSE;
+            tWaitWarning(IN := FALSE, PT := T#900MS); 
+
+            CASE WarningCode OF
+	0:   sWarningCode := 'Sin advertencia';
+    1:   sWarningCode := 'Reservado';
+    2:   sWarningCode := 'Reservado';
+    3:   sWarningCode := 'Advertencia por defecto a tierra';
+    4:   sWarningCode := 'Advertencia por sobrecarga térmica';
+    5:   sWarningCode := 'Advertencia por arranque largo';
+    6:   sWarningCode := 'Advertencia por bloqueo mecánico (atasco)';
+    7:   sWarningCode := 'Advertencia por desequilibrio de fases';
+    8:   sWarningCode := 'Advertencia por baja carga (subcarga)';
+    9:   sWarningCode := 'Reservado';
+    10:  sWarningCode := 'Advertencia por pérdida de comunicación en puerto Modbus LUCM';
+    11:  sWarningCode := 'Advertencia por temperatura interna LUCM';
+    12:  sWarningCode := 'Advertencia de identificación del módulo';
+    13:  sWarningCode := 'Reservado';
+    109: sWarningCode := 'Advertencia por pérdida de comunicación con el maestro';
+    555: sWarningCode := 'Advertencia de configuración del módulo de comunicación';
+            ELSE
+                sWarningCode := 'UnknownFault';
+            END_CASE;
+
+            IF FaultPending THEN
+                state := REQ_FAULT;
+            ELSE
+                state := IDL;
+            END_IF
+        END_IF
+END_CASE
