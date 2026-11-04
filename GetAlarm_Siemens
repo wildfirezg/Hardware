@@ -1,0 +1,152 @@
+FUNCTION_BLOCK "GetAlarm_Siemens"
+
+VAR_INPUT
+  Execute : Bool;               // Set TRUE to start logon & subscription
+  ResetError : Bool;               // Set TRUE to reset block error state
+  LanguageID : DWord := 0; // DWORD LCID (e.g., 16#0409 = English US, 16#0000 = default)
+  DataMode : Byte;
+  
+  (*Data Mode
+  0: Only the column titles are read out (Producer-ID, ID_1, ID_2, Prio, Timestamp, State)
+  1: The column headers and the alarm text is read out including associated values.
+  2: The column headers, the alarm text including associated values and the information text are read out.
+  3: The column headers, the alarm text including associated values, the information text and the additional alarm texts are read out*)
+END_VAR
+
+VAR_OUTPUT
+  Subscribed : Bool;               // TRUE when active and streaming alarms
+  Error : Bool;               // TRUE if an error occurs
+  SavedStatus : Word;               // Retains error status code for troubleshooting
+  DataReadyPulse : Bool;               // Pulses TRUE for 1 cycle when new alarm added to array
+END_VAR
+
+VAR_IN_OUT
+  AlarmBuffer : Array[*] OF AlarmData; // Array to store captured alarm messages
+  BufferIndex : DInt;                  // Current write index within buffer array
+END_VAR
+
+VAR
+  // --- INTERNAL FB STATE VARIABLES ---
+  statState : Int := 0;           // FSM State: 0=IDLE, 1=LOGON_SENT, 2=SUBSCRIBE, 10=LOGOFF, 99=ERROR
+  statMode : Byte := 16#00;      // Get_Alarm OperateMode (1=Logon, 2=Subscribe, 3=Logoff)
+  
+  // Display Class Configuration Array (0..31 of UINT)
+  // Index 0 set to 1, all unused elements MUST be initialized to 256 (Disabled)
+  statDisplayClasses : Array[0..31] OF UInt := [65535, 31(256)];
+  
+  // Get_Alarm Instruction Instance & Outputs
+  instGetAlarm : Get_Alarm;
+  statDataReady : Bool;
+  statBusy : Bool;
+  statError : Bool;
+  statInit : Bool;
+  statStatus : Word;
+  
+  // Internal storage for incoming alarm prior to array copy
+  statCurrentAlarm : AlarmData;
+END_VAR
+
+VAR_TEMP
+  tempLowerBound : DInt;
+  tempUpperBound : DInt;
+END_VAR
+
+
+// ----------------------------------------------------------------------
+// 1. STATE MACHINE FOR LIFECYCLE MANAGEMENT
+// ----------------------------------------------------------------------
+CASE #statState OF
+        
+    0: // --- IDLE STATE ---
+        #Subscribed := FALSE;
+        IF #Execute THEN
+            #statMode := 16#01;     // Set Logon pulse for 1 cycle
+            #statState := 1;
+        END_IF;
+        
+    1: // --- LOGON REQUEST SENT ---
+        // Pulse mode back to 2 immediately after triggering Logon (Mode 1)
+        // so Get_Alarm does not re-trigger logon on subsequent cycles.
+        #statMode := 16#02;
+        
+        IF NOT #statBusy AND (#statStatus = 16#0000 OR #statStatus = 16#7000) THEN
+            #statState := 2;        // Logon established, proceed to ACTIVE
+        ELSIF #statError THEN
+            #SavedStatus := #statStatus;
+            #statState := 99;
+        END_IF;
+        
+    2: // --- ACTIVE SUBSCRIPTION ---
+        #Subscribed := TRUE;
+        #statMode := 16#02;          // Remain in Subscription mode
+        
+        // Trigger graceful Logoff when Execute drops
+        IF NOT #Execute THEN
+            #statMode := 16#03;      // Mode 3 = Logoff / Unsubscribe
+            #statState := 10;
+        ELSIF #statError THEN
+            #SavedStatus := #statStatus;
+            #statState := 99;
+        END_IF;
+        
+    10: // --- LOGOFF IN PROGRESS ---
+        #Subscribed := FALSE;
+        IF NOT #statBusy THEN
+            #statMode := 16#00;
+            #statState := 0;         // Return to IDLE
+        END_IF;
+        
+    99: // --- ERROR RECOVERY STATE ---
+        #Subscribed := FALSE;
+        #Error := TRUE;
+        
+        IF #ResetError THEN
+            #Error := FALSE;
+            #SavedStatus := 16#0000;
+            #statMode := 16#03;      // Force logoff cleanup before retry
+            #statState := 10;
+        END_IF;
+        
+    ELSE
+        #statState := 0;
+END_CASE;
+
+// ----------------------------------------------------------------------
+// 2. CYCLIC EXECUTION OF GET_ALARM
+// ----------------------------------------------------------------------
+#instGetAlarm(
+              OperateMode := #statMode,
+              DataMode := #DataMode,                
+              DispClassNr := #statDisplayClasses,   // Array[0..31] OF UINT
+              Lcid := #LanguageID,           // Target Language Code ID (DWORD)
+              DataReady => #statDataReady,
+              Busy => #statBusy,
+              Error => #statError,
+              Init => #statInit,
+              Status => #statStatus,
+              Data := #statCurrentAlarm
+);
+
+// Output pulse signal matching active subscription data ready
+#DataReadyPulse := #statDataReady AND (#statState = 2);
+
+// ----------------------------------------------------------------------
+// 3. BUFFER ARRAY WRITE LOGIC
+// ----------------------------------------------------------------------
+IF #DataReadyPulse THEN
+    
+    #tempLowerBound := LOWER_BOUND(ARR := #AlarmBuffer, DIM := 1);
+    #tempUpperBound := UPPER_BOUND(ARR := #AlarmBuffer, DIM := 1);
+    
+    IF #BufferIndex < #tempLowerBound OR #BufferIndex > #tempUpperBound THEN
+        #BufferIndex := #tempLowerBound;
+    END_IF;
+    
+    #AlarmBuffer[#BufferIndex] := #statCurrentAlarm;
+    
+    #BufferIndex := #BufferIndex + 1;
+    IF #BufferIndex > #tempUpperBound THEN
+        #BufferIndex := #tempLowerBound;
+    END_IF;
+    
+END_IF;
